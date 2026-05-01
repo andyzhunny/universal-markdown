@@ -6,7 +6,6 @@ __pycache__/
 .Python
 venv/
 env/
-.env.local
 .env
 
 # IDE
@@ -19,10 +18,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# Output (generated during runs)
+# Output — generated during runs (not tracked)
 converted/
-*.md
 
-# API keys (safety)
+# API keys
 *.pem
 *.key
