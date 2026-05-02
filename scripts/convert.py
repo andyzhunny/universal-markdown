@@ -106,6 +106,29 @@ def convert_image(file_path: Path, output_path: Path) -> tuple[bool, str]:
         return False, str(e)
 
 
+# ==================== PDF OCR 核心（强制全页渲染，供验证重做和扫描件使用）====================
+def _do_pdf_ocr(file_path: Path, output_path: Path) -> None:
+    """强制对 PDF 做高清渲染 OCR，绕过文字层直接识别图像内容。"""
+    doc = fitz.open(str(file_path))
+    all_parts = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        mat = fitz.Matrix(3, 3)  # 高清渲染 3x
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+        if len(img_bytes) <= 5000:
+            continue
+        text = _ocr_bytes(img_bytes, "image/png", f"{file_path.name}[p{page_num+1}]")
+        text = re.sub(r"<\|ref\|>.*?<\|/ref\|>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<\|det\|>.*?<\|/det\|>", "", text, flags=re.DOTALL)
+        if text and len(text) > 5:
+            all_parts.append(f"--- 第 {page_num + 1} 页 ---\n{text}")
+    doc.close()
+    if all_parts:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(f"# {file_path.name}\n\n" + "\n\n".join(all_parts) + "\n")
+
+
 # ==================== PDF 智能处理 ====================
 def convert_pdf(file_path: Path, output_path: Path) -> tuple[bool, str]:
     """
@@ -131,9 +154,17 @@ def convert_pdf(file_path: Path, output_path: Path) -> tuple[bool, str]:
         has_real_text = total_text_len > 50          # 有实质文字内容
         is_scanned = total_img_count > 0 and total_text_len <= 50  # 有图无文字 = 扫描件
 
-        # --- 分支一：真实文字 PDF → MarkItDown ---
+        # --- 分支一：真实文字 PDF → MarkItDown（+ 事后验证）---
         if has_real_text and not is_scanned:
-            return convert_word(file_path, output_path)
+            ok, detail = convert_word(file_path, output_path)
+            # 验证：MarkItDown 提取少于 100 字符 → 说明文字层不完整，改走 OCR
+            if ok and output_path.exists():
+                text = output_path.read_text(encoding="utf-8")
+                if len(text.strip()) < 100:
+                    # 丢弃不完整结果，改用 OCR
+                    _do_pdf_ocr(file_path, output_path)
+                    detail = "OCR(验证重做)"
+            return ok, detail
 
         # --- 分支二：扫描件 PDF → OCR（嵌入图 + 全页渲染）---
         doc = fitz.open(str(file_path))
@@ -179,6 +210,10 @@ def convert_pdf(file_path: Path, output_path: Path) -> tuple[bool, str]:
                 f.write(f"# {file_path.name}\n\n{full_text}\n")
             return True, f"OK ({extracted_count} 图)"
         else:
+            # 扫描件但无嵌入图且无文字 → 强制全页 OCR
+            _do_pdf_ocr(file_path, output_path)
+            if output_path.exists() and output_path.stat().st_size > 50:
+                return True, "OCR(全页渲染)"
             return convert_word(file_path, output_path)
 
     except Exception as e:
